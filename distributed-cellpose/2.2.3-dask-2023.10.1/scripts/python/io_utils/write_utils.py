@@ -90,28 +90,49 @@ def save(data, container_path, subpath,
 
 
 def save_blocks(dimage, persist_block, blocksize=None, dask_cluster=None):
-    print('!!!!!! BLOCKSIZE', blocksize, flush=True)
-    if blocksize is not None:
-        print('!!!!!! RECHUNK BLOCKSIZE', blocksize, flush=True)
-        chunksize = blocksize
-        da.rechunk(dimage, chunks=blocksize)
-        print('!!!!!! DIMAGE CHUNKSIZE', dimage.chunks, flush=True)
+    if blocksize is None:
+        chunksize = dimage.chunksize
     else:
-        chunksize = dimage.chunks
-    persisted_array = da.map_blocks(persist_block, dimage,
-                                    dtype=dimage.dtype,
+        chunksize = tuple([d1 if d1 <= d2 else d2
+                           for (d1,d2) in zip(blocksize, dimage.shape)])
+
+    if chunksize == dimage.chunksize:
+        rechunked_dimage = dimage
+    else:
+        # rechunk the image
+        print(f'Rechunk the image using {chunksize} before persisting it',
+              flush=True)
+        rechunked_dimage = da.zeros_like(dimage, chunks=blocksize)
+        chunksize = blocksize
+        rechunked_dimage = da.map_blocks(_copy_blocks_from,
+                                         rechunked_dimage,
+                                         dtype=rechunked_dimage.dtype,
+                                         chunks=chunksize,
+                                         meta=np.array(rechunked_dimage.shape),
+                                         src=dimage)
+
+    persisted_array = da.map_blocks(persist_block, rechunked_dimage,
+                                    dtype=rechunked_dimage.dtype,
                                     chunks=chunksize,
-                                    meta=np.array())
+                                    meta=np.array(rechunked_dimage.shape))
     res = dask_cluster.compute(persisted_array)
     dask_cluster.gather([res])
+
+
+
+def _copy_blocks_from(block, block_info=None, src=None):
+    if block_info is not None and src is not None:
+        block_coords = _block_coords_from_block_info(block_info)
+        return src[block_coords]
+    else:
+        return block
 
 
 def _save_block_to_nrrd(block, output_dir=None, output_name=None,
                         block_info=None,
                         ext='.nrrd'):
     if block_info is not None:
-        block_coords = tuple([slice(c[0],c[1])
-                              for c in block_info[0]['array-location']])
+        block_coords = _block_coords_from_block_info(block_info)
 
         saved_blocks_count = np.prod(block_info[None]['num-chunks'])
         if saved_blocks_count > 1:
@@ -137,8 +158,7 @@ def _save_block_to_tiff(block, output_dir=None, output_name=None,
                         ext='.tif',
                         ):
     if block_info is not None:
-        block_coords = tuple([slice(c[0],c[1])
-                              for c in block_info[0]['array-location']])
+        block_coords = _block_coords_from_block_info(block_info)
 
         saved_blocks_count = np.prod(block_info[None]['num-chunks'])
         if saved_blocks_count > 1:
@@ -166,11 +186,14 @@ def _save_block_to_tiff(block, output_dir=None, output_name=None,
 
 def _save_block_to_zarr(block, output=None, block_info=None):
     if block_info is not None:
-        block_coords = tuple([slice(c[0],c[1]) 
-                              for c in block_info[0]['array-location']])
+        block_coords = _block_coords_from_block_info(block_info)
         print(f'Write block {block.shape}',
               f'block_info: {block_info}',
               f'block_coords: {block_coords}',
               flush=True)
         output[block_coords] = block
     return block
+
+
+def _block_coords_from_block_info(block_info):
+    return tuple([slice(c[0],c[1]) for c in block_info[0]['array-location']])
