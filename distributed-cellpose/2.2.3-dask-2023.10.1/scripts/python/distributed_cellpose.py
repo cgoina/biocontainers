@@ -9,7 +9,7 @@ from cellpose.cli import get_arg_parser
 from dask.distributed import (Client, LocalCluster)
 from flatten_json import flatten
 
-from distseg.dask_distributed_segmentation import distributed_segmentation
+from altcontrib.distributed_segmentation import distributed_segmentation
 
 def _inttuple(arg):
     if arg is not None and arg.strip():
@@ -149,7 +149,7 @@ def _run_segmentation(args):
             eval_channels = None
 
         try:
-            ouput_labels = distributed_segmentation(
+            output_labels = distributed_segmentation(
                 image_data,
                 args.segmentation_model,
                 args.diam_mean,
@@ -165,16 +165,21 @@ def _run_segmentation(args):
                 use_net_avg=args.net_avg,
                 use_gpu=args.use_gpu,
                 device=args.device,
-                dask_cluster=dask_client,
                 max_tasks=args.max_cellpose_tasks,
                 iou_threshold=args.iou_threshold,
                 iou_depth=args.iou_depth,
             )
-            write_utils.save(ouput_labels, args.output, output_subpath,
-                             blocksize=output_blocks,
-                             resolution=image_attrs.get('pixelResolution'),
-                             scale_factors=image_attrs.get('downsamplingFactors'),
-                             dask_cluster=dask_client)
+
+            persisted_labels = write_utils.save(
+                output_labels, args.output, output_subpath,
+                blocksize=output_blocks,
+                resolution=image_attrs.get('pixelResolution'),
+                scale_factors=image_attrs.get('downsamplingFactors'),
+            )
+
+            if persisted_labels is not None:
+                dask_client.compute(persisted_labels).result()
+
         except:
             raise
 

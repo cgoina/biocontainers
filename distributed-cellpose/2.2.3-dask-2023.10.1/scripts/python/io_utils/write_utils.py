@@ -12,7 +12,6 @@ def save(data, container_path, subpath,
          blocksize=None,
          resolution=None,
          scale_factors=None,
-         dask_cluster=None,
 ):
     """
     Persist distributed data - typically a dask array to the specified
@@ -83,13 +82,12 @@ def save(data, container_path, subpath,
               flush=True)
 
     if persist_block is not None:
-        save_blocks(data, persist_block, blocksize=blocksize,
-                    dask_cluster=dask_cluster)
-        print(f'Finished writing data to {container_path}:{subpath}',
-              flush=True)
+        return save_blocks(data, persist_block, blocksize=blocksize)
+    else:
+        return None    
 
 
-def save_blocks(dimage, persist_block, blocksize=None, dask_cluster=None):
+def save_blocks(dimage, persist_block, blocksize=None):
     if blocksize is None:
         chunksize = dimage.chunksize
     else:
@@ -111,13 +109,10 @@ def save_blocks(dimage, persist_block, blocksize=None, dask_cluster=None):
                                          meta=np.array(rechunked_dimage.shape),
                                          src=dimage)
 
-    persisted_array = da.map_blocks(persist_block, rechunked_dimage,
-                                    dtype=rechunked_dimage.dtype,
-                                    chunks=chunksize,
-                                    meta=np.array(rechunked_dimage.shape))
-    res = dask_cluster.compute(persisted_array)
-    dask_cluster.gather([res])
-
+    return da.map_blocks(persist_block, rechunked_dimage,
+                         # drop all axis - the result of map_blocks is None
+                         drop_axis=tuple(range(rechunked_dimage.ndim)),
+                         meta=np.array((np.nan)))
 
 
 def _copy_blocks_from(block, block_info=None, src=None):
@@ -149,7 +144,6 @@ def _save_block_to_nrrd(block, output_dir=None, output_name=None,
               flush=True)
         nrrd.write(full_filename, block.transpose(2, 1, 0),
                    compression_level=2)
-    return block
 
 
 def _save_block_to_tiff(block, output_dir=None, output_name=None,
@@ -179,9 +173,9 @@ def _save_block_to_tiff(block, output_dir=None, output_name=None,
         }
         if resolution is not None:
             tiff_metadata['resolution'] = resolution
+
         tifffile.imwrite(full_filename, block, 
                          metadata=tiff_metadata)
-    return block
 
 
 def _save_block_to_zarr(block, output=None, block_info=None):
@@ -192,7 +186,6 @@ def _save_block_to_zarr(block, output=None, block_info=None):
               f'block_coords: {block_coords}',
               flush=True)
         output[block_coords] = block
-    return block
 
 
 def _block_coords_from_block_info(block_info):

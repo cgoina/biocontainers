@@ -5,7 +5,7 @@ import numpy as np
 import scipy
 import time
 
-from dask.distributed import (as_completed, Semaphore)
+from dask.distributed import Semaphore
 from sklearn import metrics as sk_metrics
 
 
@@ -29,7 +29,6 @@ def distributed_segmentation(
         flow_threshold=0.4,
         cellprob_threshold=0,
         stitch_threshold=0,
-        dask_cluster=None,
         max_tasks=-1,
         gpu_batch_size=8,
         iou_depth=1,
@@ -72,7 +71,7 @@ def distributed_segmentation(
 
     get_image_block = functools.partial(_get_block_data, image)
 
-    image_blocks = dask_cluster.map(
+    image_blocks = map(
         get_image_block,
         blocks_info,
     )
@@ -81,13 +80,12 @@ def distributed_segmentation(
         print(f'Limit segmentation tasks to {max_tasks}', flush=True)
         tasks_semaphore = Semaphore(max_leases=max_tasks,
                                     name='CellposeLimiter')
+        eval_model_method = _throttle(_eval_model, tasks_semaphore)
     else:
-        tasks_semaphore = None
+        eval_model_method = _eval_model
 
-    segment_block = functools.partial(
-        _segment_block,
-        blocksize=blockchunks,
-        blockoverlaps=blockoverlaps,
+    eval_block = functools.partial(
+        dask.delayed(eval_model_method),
         model_type=model_type,
         eval_channels=eval_channels,
         use_net_avg=use_net_avg,
@@ -104,10 +102,16 @@ def distributed_segmentation(
         use_gpu=use_gpu,
         device=device,
         gpu_batch_size=gpu_batch_size,
-        guard=tasks_semaphore,
     )
 
-    segment_block_res = dask_cluster.map(
+    segment_block = functools.partial(
+        _segment_block,
+        eval_block,
+        blocksize=blockchunks,
+        blockoverlaps=blockoverlaps,
+    )
+
+    segment_block_res = map(
         segment_block,
         image_blocks
     )
@@ -117,9 +121,7 @@ def distributed_segmentation(
         image.shape,
         blocksize,
     )
-    print(f'Collected all {len(labeled_blocks_info)} ({nblocks}) ',
-          f'labeled blocks -> max label is {max_label}',
-          flush=True)
+
     if np.prod(nblocks) > 1:
         print(f'Link labels for {nblocks}', flush=True)
         new_labeling = _link_labels(
@@ -133,9 +135,11 @@ def distributed_segmentation(
             labeling=new_labeling,
             dtype=labeled_blocks.dtype,
             chunks=labeled_blocks.chunks)
+        print(f'Completed linking labels for {relabeled.shape} image', flush=True)
     else:
+        print('There is only one block - no link labels is needed',
+              flush=True)
         relabeled = labeled_blocks
-    print(f'Completed linking labels for {relabeled.shape} image', flush=True)
     return relabeled
 
 
@@ -160,87 +164,34 @@ def _get_block_data(image, block_info):
     print(f'{time.ctime(time.time())} '
         f'Get block: {block_index}, from: {block_coords}',
         flush=True)
-    block_data = image[block_coords]
+    block_data = da.from_array(image[block_coords])
     return block_index, block_coords, block_data
 
 
-def _segment_block(block,
+def _throttle(m, semaphore):
+    def throttled_m(*args, **kwargs):
+        with semaphore:
+            print(f'Secured slot to run {m}', flush=True)
+            return m(*args, **kwargs)
+    
+    return throttled_m
+
+
+def _segment_block(eval_method,
+                   block,
                    blocksize=None,
                    blockoverlaps=None,
                    preprocessing_steps=[],
-                   model_type='cyto',
-                   eval_channels=None,
-                   use_net_avg=False,
-                   do_3D=True,
-                   z_axis=0,
-                   diameter=None,
-                   anisotropy=None,
-                   min_size=15,
-                   resample=True,
-                   flow_threshold=0.4,
-                   cellprob_threshold=0,
-                   stitch_threshold=0,
-                   use_torch=False,
-                   use_gpu=False,
-                   device=None,
-                   gpu_batch_size=8,
-                   guard=None,
 ):
     block_index, block_coords, block_data = block
-    print(f'{time.ctime(time.time())} '
-          f'Segment block: {block_index}, size: {block_data.shape}',
-          f'3-D:{do_3D}, diameter:{diameter}',
-          flush=True)
+    block_shape = tuple([sl.stop-sl.start for sl in block_coords])
     # preprocess
     for pp_step in preprocessing_steps:
         block_data = pp_step[0](block_data, **pp_step[1])
 
-    if guard is not None:
-        with guard:
-            labels = _eval_model(block_index,
-                                 block_data,
-                                 model_type=model_type,
-                                 eval_channels=eval_channels,
-                                 diameter=diameter,
-                                 z_axis=z_axis,
-                                 do_3D=do_3D,
-                                 min_size=min_size,
-                                 resample=resample,
-                                 use_net_avg=use_net_avg,
-                                 anisotropy=anisotropy,
-                                 flow_threshold=flow_threshold,
-                                 cellprob_threshold=cellprob_threshold,
-                                 stitch_threshold=stitch_threshold,
-                                 use_torch=use_torch,
-                                 use_gpu=use_gpu,
-                                 device=device,
-                                 gpu_batch_size=gpu_batch_size,
-                                 )
-    else:
-        labels = _eval_model(block_index,
-                             block_data,
-                             model_type=model_type,
-                             eval_channels=eval_channels,
-                             diameter=diameter,
-                             z_axis=z_axis,
-                             do_3D=do_3D,
-                             min_size=min_size,
-                             resample=resample,
-                             use_net_avg=use_net_avg,
-                             anisotropy=anisotropy,
-                             flow_threshold=flow_threshold,
-                             cellprob_threshold=cellprob_threshold,
-                             stitch_threshold=stitch_threshold,
-                             use_torch=use_torch,
-                             use_gpu=use_gpu,
-                             device=device,
-                             gpu_batch_size=gpu_batch_size,
-                             )
-    max_label = labels.max()
-    print(f'Completed segmentation for block {block_index}, ',
-          f'labels shape: {labels.shape}, ',
-          f'max label: {max_label}, ',
-          flush=True)
+    labels = eval_method(block_index, block_data)
+
+    max_label = np.max(labels)
 
     # remove overlaps
     new_block_coords = list(block_coords)
@@ -254,14 +205,16 @@ def _segment_block(block,
             new_block_coords[axis] = slice(a + blockoverlaps[axis], b)
 
         # right side
-        if labels.shape[axis] > blocksize[axis]:
+        if block_shape[axis] > blocksize[axis]:
             slc = [slice(None),]*block_data.ndim
             slc[axis] = slice(None, blocksize[axis])
             labels = labels[tuple(slc)]
             a = new_block_coords[axis].start
             new_block_coords[axis] = slice(a, a + blocksize[axis])
 
-    return block_index, tuple(new_block_coords), labels.max(), labels
+    print(f'Completed segmentation for block {block_index}', flush=True)
+
+    return block_index, tuple(new_block_coords), max_label, labels
 
 
 def _eval_model(block_index,
@@ -285,6 +238,11 @@ def _eval_model(block_index,
 ):
     from cellpose import models
     from cellpose.io import logger_setup
+
+    print(f'{time.ctime(time.time())} '
+          f'Run model eval for block: {block_index}, size: {block_data.shape}',
+          f'3-D:{do_3D}, diameter:{diameter}',
+          flush=True)
 
     logger_setup()
     np.random.seed(block_index)
@@ -311,16 +269,20 @@ def _eval_model(block_index,
                                  stitch_threshold=stitch_threshold,
                                  batch_size=gpu_batch_size,
                                 )
+    print(f'{time.ctime(time.time())} ',
+          f'Finished model eval for block: {block_index}',
+          flush=True)
+
     return labels.astype(np.uint32)
 
 
-def _collect_labeled_blocks(segment_blocks_futures, shape, chunksize):
+def _collect_labeled_blocks(segment_blocks_res, shape, chunksize):
     """
     Collect segmentation results.
 
     Parameters
     ==========
-    segment_blocks_futures: block segmentation futures
+    segment_blocks_res: block segmentation results
     shape: shape of a full image being segmented
     chunksize: result array chunksize
 
@@ -334,31 +296,36 @@ def _collect_labeled_blocks(segment_blocks_futures, shape, chunksize):
     result_index = 0
     max_label = 0
     # collect segmentation results
-    for batch in as_completed(segment_blocks_futures,
-                              with_results=True).batches():
-        for _, r in batch:
-            block_index, block_coords, max_block_label, block_labels = r
-            print(f'{result_index+1}. ',
-                f'Write labels {block_index}, {block_coords} ',
-                f'data type: {block_labels.dtype}, ',
-                f'max block label: {max_block_label}, '
-                f'label range: {max_label} - {max_label+max_block_label}',
-                flush=True)
+    for r in segment_blocks_res:
+        (block_index, block_coords, dmax_block_label, dblock_labels) = r
+        block_shape = tuple([sl.stop-sl.start for sl in block_coords])
+        block_labels = da.from_delayed(dblock_labels,
+                                       shape=block_shape,
+                                       dtype=np.uint32)
 
-            block_labels_offsets = np.where(block_labels > 0,
-                                            max_label,
-                                            0).astype(block_labels.dtype)
-            block_labels += block_labels_offsets
-            # block_index, block_coords, labels_range
-            labeled_blocks_info.append((block_index,
-                                        block_coords,
-                                        (max_label, max_label+max_block_label)))
-            # set the block in the dask array of labeled blocks
-            labels[block_coords] = block_labels[...]
-            max_label = max_label + max_block_label
-            result_index += 1
+        max_block_label = da.from_delayed(dmax_block_label, shape=(), dtype=np.uint32)
 
-    print(f'Found {max_label} labels in {shape} image blocks',
+        print(f'{result_index+1}. ',
+            f'Write labels {block_index}, {block_coords} ',
+            f'data type: {block_labels.dtype}, ',
+            f'max block label: {max_block_label}, '
+            f'label range: {max_label} - {max_label+max_block_label}',
+            flush=True)
+
+        block_labels_offsets = da.where(block_labels > 0,
+                                        max_label,
+                                        np.uint32(0)).astype(np.uint32)
+        block_labels += block_labels_offsets
+        # block_index, block_coords, labels_range
+        labeled_blocks_info.append((block_index,
+                                    block_coords,
+                                    (max_label, max_label+max_block_label)))
+        # set the block in the dask array of labeled blocks
+        labels[block_coords] = block_labels[...]
+        max_label = max_label + max_block_label
+        result_index += 1
+
+    print(f'Finished collecting labels in {shape} image',
           flush=True)
     return labels, labeled_blocks_info, max_label
 
@@ -438,7 +405,7 @@ def _across_block_label_grouping(face, axis, iou_threshold):
 
     # Ignore errors with divide by zero, which the np.where sets to zero.
     with np.errstate(divide="ignore", invalid="ignore"):
-        iou = np.where(intersection > 0, intersection / union, 0)
+        iou = np.where(intersection > 0, intersection / union, 0).astype(np.uint32)
 
     labels0, labels1 = np.nonzero(iou >= iou_threshold)
 
@@ -446,7 +413,8 @@ def _across_block_label_grouping(face, axis, iou_threshold):
     labels1_orig = unique[labels1]
     grouped = np.stack([labels0_orig, labels1_orig])
 
-    valid = np.all(grouped != 0, axis=0)  # Discard any mappings with bg pixels
+    # Discard any mappings with bg pixels
+    valid = np.all(grouped != 0, axis=0).astype(np.uint32)
     return grouped[:, valid]
 
 
