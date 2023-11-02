@@ -293,25 +293,24 @@ def _eval_model(block_index,
                                                     gpu=use_gpu,
                                                     device=device)
 
-    # model = models.Cellpose(gpu=gpu,
-    #                         model_type=model_type,
-    #                         net_avg=use_net_avg,
-    #                         device=segmentation_device)
-    # labels, _, _, _ = model.eval(block_data,
-    #                              channels=eval_channels,
-    #                              diameter=diameter,
-    #                              z_axis=z_axis,
-    #                              do_3D=do_3D,
-    #                              min_size=min_size,
-    #                              resample=resample,
-    #                              net_avg=use_net_avg,
-    #                              anisotropy=anisotropy,
-    #                              flow_threshold=flow_threshold,
-    #                              cellprob_threshold=cellprob_threshold,
-    #                              stitch_threshold=stitch_threshold,
-    #                              batch_size=gpu_batch_size,
-    #                             )
-    labels = block_data
+    model = models.Cellpose(gpu=gpu,
+                            model_type=model_type,
+                            net_avg=use_net_avg,
+                            device=segmentation_device)
+    labels, _, _, _ = model.eval(block_data,
+                                 channels=eval_channels,
+                                 diameter=diameter,
+                                 z_axis=z_axis,
+                                 do_3D=do_3D,
+                                 min_size=min_size,
+                                 resample=resample,
+                                 net_avg=use_net_avg,
+                                 anisotropy=anisotropy,
+                                 flow_threshold=flow_threshold,
+                                 cellprob_threshold=cellprob_threshold,
+                                 stitch_threshold=stitch_threshold,
+                                 batch_size=gpu_batch_size,
+                                )
     return labels.astype(np.uint32)
 
 
