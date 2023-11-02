@@ -123,7 +123,7 @@ def distributed_segmentation(
     )
 
     if np.prod(nblocks) > 1:
-        print(f'Link labels for {nblocks}', flush=True)
+        print(f'Prepare to link labels for {nblocks}', flush=True)
         new_labeling = _link_labels(
             labeled_blocks, labeled_blocks_info, max_label,
             iou_depth,
@@ -135,7 +135,6 @@ def distributed_segmentation(
             labeling=new_labeling,
             dtype=labeled_blocks.dtype,
             chunks=labeled_blocks.chunks)
-        print(f'Completed linking labels for {relabeled.shape} image', flush=True)
     else:
         print('There is only one block - no link labels is needed',
               flush=True)
@@ -168,12 +167,17 @@ def _get_block_data(image, block_info):
     return block_index, block_coords, block_data
 
 
-def _throttle(m, semaphore):
+def _throttle(m, sem):
     def throttled_m(*args, **kwargs):
-        with semaphore:
-            print(f'Secured slot to run {m}', flush=True)
-            return m(*args, **kwargs)
-    
+        with sem:
+            print(f'{time.ctime(time.time())} Secured slot to run {m}',
+                  flush=True)
+            try:
+                return m(*args, **kwargs)
+            finally:
+                print(f'{time.ctime(time.time())} Release slot used for {m}',
+                      flush=True)
+
     return throttled_m
 
 
