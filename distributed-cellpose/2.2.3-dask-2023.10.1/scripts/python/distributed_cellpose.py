@@ -1,5 +1,5 @@
-import distsegutils.read_utils as read_utils
-import distsegutils.write_utils as write_utils
+import io_utils.read_utils as read_utils
+import io_utils.write_utils as write_utils
 import sys
 import traceback
 import yaml
@@ -7,9 +7,9 @@ import yaml
 from cellpose import version_str as cellpose_version
 from cellpose.cli import get_arg_parser
 from dask.distributed import (Client, LocalCluster)
-from distseg.dask_distributed_segmentation import distributed_segmentation
 from flatten_json import flatten
 
+from distseg.dask_distributed_segmentation import distributed_segmentation
 
 def _inttuple(arg):
     if arg is not None and arg.strip():

@@ -83,15 +83,25 @@ def save(data, container_path, subpath,
               flush=True)
 
     if persist_block is not None:
-        save_blocks(data, persist_block, dask_cluster=dask_cluster)
+        save_blocks(data, persist_block, blocksize=blocksize,
+                    dask_cluster=dask_cluster)
         print(f'Finished writing data to {container_path}:{subpath}',
               flush=True)
 
 
-def save_blocks(dimage, persist_block, dask_cluster=None):
+def save_blocks(dimage, persist_block, blocksize=None, dask_cluster=None):
+    print('!!!!!! BLOCKSIZE', blocksize, flush=True)
+    if blocksize is not None:
+        print('!!!!!! RECHUNK BLOCKSIZE', blocksize, flush=True)
+        chunksize = blocksize
+        da.rechunk(dimage, chunks=blocksize)
+        print('!!!!!! DIMAGE CHUNKSIZE', dimage.chunks, flush=True)
+    else:
+        chunksize = dimage.chunks
     persisted_array = da.map_blocks(persist_block, dimage,
                                     dtype=dimage.dtype,
-                                    meta=np.array(dimage.shape))
+                                    chunks=chunksize,
+                                    meta=np.array())
     res = dask_cluster.compute(persisted_array)
     dask_cluster.gather([res])
 
