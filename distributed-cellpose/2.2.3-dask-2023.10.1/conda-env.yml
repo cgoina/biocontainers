@@ -10,6 +10,7 @@ dependencies:
   - scikit-image>=0.21.0
   - zarr=2.13.3
   - pytorch=1.13
+  - roifile
   - pip:
     - cellpose
     - cellpose[distributed]
